@@ -1,0 +1,20 @@
+{
+  "name": "chatbot-platform",
+  "version": "1.0.0",
+  "description": "A minimal chatbot platform with authentication, project management, and LLM integration",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && npm run dev",
+    "client": "cd client && npm run dev",
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install",
+    "build": "cd client && npm run build"
+  },
+  "keywords": ["chatbot", "llm", "openai", "platform"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+
