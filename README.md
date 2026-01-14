@@ -62,8 +62,8 @@ A modern, full-stack AI project management and chat application featuring a stun
     JWT_SECRET=your_super_secret_key
     
     # Choose Provider: 'openai' or 'openrouter'
-    LLM_PROVIDER=openai 
-    OPENAI_API_KEY=sk-...
+    LLM_PROVIDER=openrouter
+    OPENROUTER_API_KEY=sk-...
     ```
 
 4.  **Run the Application**
