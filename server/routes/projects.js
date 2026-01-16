@@ -83,7 +83,11 @@ router.post(
       });
     } catch (error) {
       console.error('Error creating project:', error);
-      res.status(500).json({ error: 'Internal server error' });
+      res.status(500).json({
+        error: 'Failed to create project',
+        details: error.message,
+        hint: 'Check server logs for PG Error'
+      });
     }
   }
 );

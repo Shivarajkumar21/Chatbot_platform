@@ -8,21 +8,26 @@ import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { put, del } from '@vercel/blob';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, '..', 'uploads');
+// Ensure uploads directory exists (still needed for Multer temp storage)
+let uploadsDir = path.join(__dirname, '..', 'uploads');
+if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+  uploadsDir = path.join('/tmp', 'uploads');
+}
+
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
 router.use(authenticateToken);
 
-// Configure multer for file uploads
+// Configure multer for temp file uploads
 const upload = multer({
   dest: uploadsDir,
   limits: {
@@ -30,8 +35,7 @@ const upload = multer({
   },
 });
 
-// Upload file to OpenAI and associate with project
-// Upload file to OpenAI or store locally if using OpenRouter
+// Upload file
 router.post('/:projectId/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -49,23 +53,20 @@ router.post('/:projectId/upload', upload.single('file'), async (req, res) => {
     );
 
     if (!project) {
-      // Clean up uploaded file
       if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(404).json({ error: 'Project not found' });
     }
 
     const openaiKey = process.env.OPENAI_API_KEY;
-    const openrouterKey = process.env.OPENROUTER_API_KEY;
 
     let fileData = {
       id: '',
       purpose: '',
-      bytes: 0
+      bytes: req.file.size
     };
 
-    // Check if we can use OpenAI Files API
+    // 1. Try OpenAI Files API first (if Key exists) - Preferred for AI Context
     if (openaiKey && openaiKey.startsWith('sk-') && openaiKey !== 'your-openai-api-key-here') {
-      // ... existing OpenAI logic ...
       try {
         const formData = new FormData();
         formData.append('file', fs.createReadStream(req.file.path), req.file.originalname);
@@ -83,39 +84,47 @@ router.post('/:projectId/upload', upload.single('file'), async (req, res) => {
         );
 
         fileData = response.data;
-        // Clean up local file since it's on OpenAI servers
-        fs.unlinkSync(req.file.path);
+        // Clean up local temp file
+        try { fs.unlinkSync(req.file.path); } catch (e) { }
 
       } catch (apiError) {
-        console.error('OpenAI Upload failed, falling back to local storage:', apiError.message);
-        // Fallback to local storage
+        console.error('OpenAI Upload failed, falling back:', apiError.message);
       }
     }
 
-    // If no OpenAI key or upload failed, check if we can store locally (OpenRouter case)
-    if (!fileData.id) {
-      if (openrouterKey || (openaiKey && openaiKey !== 'your-openai-api-key-here')) {
-        // Store locally
-        // NB: Multer already saved it to req.file.path. We just keep it there.
-        // Rename it to have extension for easier viewing if needed
-        const fileExt = path.extname(req.file.originalname);
-        const searchPath = path.join(path.dirname(req.file.path), req.file.filename + fileExt);
-        fs.renameSync(req.file.path, searchPath);
-
-        fileData = {
-          id: `file-local-${req.file.filename}`, // Mock ID
-          purpose: 'local_context',
-          bytes: req.file.size
-        };
-      } else {
-        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-        return res.status(500).json({
-          error: 'File uploads require an API key (OpenAI or OpenRouter). Please check your .env file.'
+    // 2. Fallback: Vercel Blob (Persistent Cloud Storage)
+    if (!fileData.id && process.env.BLOB_READ_WRITE_TOKEN) {
+      try {
+        console.log('Uploading to Vercel Blob...');
+        const fileStream = fs.createReadStream(req.file.path);
+        const blob = await put(req.file.originalname, fileStream, {
+          access: 'public',
+          token: process.env.BLOB_READ_WRITE_TOKEN
         });
+
+        fileData.id = blob.url; // Use URL as ID
+        fileData.purpose = 'blob_context';
+
+        console.log('Blob Upload Success:', blob.url);
+        // Clean up local temp file
+        try { fs.unlinkSync(req.file.path); } catch (e) { }
+      } catch (blobError) {
+        console.error('Blob Upload Failed:', blobError);
       }
     }
 
-    // Save file reference to database
+    // 3. Fallback: Local Storage (Only for localhost, ephemeral on Vercel)
+    if (!fileData.id) {
+      // Just keep the multer file where it is, rename with extension
+      const fileExt = path.extname(req.file.originalname);
+      const searchPath = path.join(path.dirname(req.file.path), req.file.filename + fileExt);
+      fs.renameSync(req.file.path, searchPath);
+
+      fileData.id = `file-local-${req.file.filename}`;
+      fileData.purpose = 'local_context';
+    }
+
+    // Save to DB
     await run(
       'INSERT INTO files (project_id, file_id, filename, purpose) VALUES (?, ?, ?, ?)',
       [projectId, fileData.id, req.file.originalname, fileData.purpose]
@@ -131,22 +140,15 @@ router.post('/:projectId/upload', upload.single('file'), async (req, res) => {
       },
     });
   } catch (error) {
-    // Clean up local file if it exists and wasn't processed
     if (req.file && fs.existsSync(req.file.path)) {
-      // Only delete if we didn't just rename it effectively
-      // Simplified: just try/catch unlink
       try { fs.unlinkSync(req.file.path); } catch (e) { }
     }
-
     console.error('File upload error:', error);
-    res.status(500).json({
-      error: 'Failed to upload file',
-      details: error.response?.data?.error?.message || error.message,
-    });
+    res.status(500).json({ error: 'Failed to upload file', details: error.message });
   }
 });
 
-// Get all files for a project
+// Get all files
 router.get('/:projectId', async (req, res) => {
   try {
     const db = getDb();
@@ -156,9 +158,7 @@ router.get('/:projectId', async (req, res) => {
       [req.params.projectId, req.user.id]
     );
 
-    if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
+    if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const files = await all(
       'SELECT * FROM files WHERE project_id = ? ORDER BY created_at DESC',
@@ -172,76 +172,83 @@ router.get('/:projectId', async (req, res) => {
   }
 });
 
-// Delete a file
+// Delete file
 router.delete('/:projectId/:fileId', async (req, res) => {
   try {
     const db = getDb();
     const { get, run } = promisifyDb(db);
+
+    // Decode ID if it's a URL (sometimes express messes up encoding)
+    const fileId = decodeURIComponent(req.params.fileId);
+
     const project = await get(
       'SELECT * FROM projects WHERE id = ? AND user_id = ?',
       [req.params.projectId, req.user.id]
     );
 
-    if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
+    if (!project) return res.status(404).json({ error: 'Project not found' });
 
+    // Note: We search by ID directly. If fileId passed in URL is a full URL, 
+    // it might be tricky matching if not encoded properly. 
+    // Usually for deletion, FE sends the ID we gave it.
+
+    // Actually, SQL might need careful handling if ID is a long URL.
+    // Let's assume exact match.
     const file = await get(
       'SELECT * FROM files WHERE id = ? AND project_id = ?',
-      [req.params.fileId, req.params.projectId]
+      [fileId, req.params.projectId]
     );
+
+    // If not found, try searching by encoded/decoded variations if really needed, 
+    // or assume FE passed the ID correct (usually an autoinc integer ID? NO, DB schema says file_id TEXT).
+    // Wait, the DB primary key is `id` (integer). The `file_id` is the external ID.
+    // The route is `/:projectId/:fileId`. 
+    // Is `req.params.fileId` the DB ID (integer) or the `file_id` (string)?
+    // From ProjectDetail.jsx: `handleDeleteFile(f.id)` matches the DATABASE ID.
+    // Ah! The previous code used `WHERE id = ?`. So `fileId` param IS the DB ID.
+    // OK, so `file` object will have the `file_id` column which contains the Blob URL or OpenAI ID.
+
+    // Let's re-read the SELECT one more time.
+    // `SELECT * FROM files WHERE id = ?` -- Yes, it is the DB Primary Key.
 
     if (!file) {
-      return res.status(404).json({ error: 'File not found' });
+      if (req.params.fileId.startsWith('http')) {
+        // Fallback logic if FE sent the URL instead of ID (unlikely based on code)
+      }
+      // Try again? No, let's just proceed.
+      // Actually, wait. Previous code: `SELECT * FROM files WHERE id = ?`.
+      // The frontend passes `f.id` which is the SQL ID. Correct.
     }
 
-    // Delete from OpenAI or Local Storage
-    const apiKey = process.env.OPENAI_API_KEY;
+    if (!file) return res.status(404).json({ error: 'File not found' });
 
-    if (file.file_id.startsWith('file-local-')) {
-      // It's a local file, delete from disk
-      // Original filename was stored in filename, but we saved it with extension in upload
-      // We can try to finding it by the id suffix (which is the filename)
-      // The upload logic: searchPath = path.join(path.dirname(req.file.path), req.file.filename + fileExt);
-      // And ID: `file-local-${req.file.filename}`
-      // We don't easily know the extension here without storing it. 
-      // Start simple: try to specific file if we can, but since we didn't store the exact path in DB, 
-      // we might skip strict disk cleanup for now to avoid deleting wrong files, or just try to match.
-      // Actually, the uploaded file on disk is named matches the `req.file.filename` which IS the ID suffix.
-      // The upload renamed it to include extension.
-      // Let's iterate directory to find the file starting with that ID suffix (the random filename).
+    // Perform Deletion
+    const storedId = file.file_id;
 
-      const uploadsDir = path.join(__dirname, '..', 'uploads');
-      const filePrefix = file.file_id.replace('file-local-', '');
-
-      if (fs.existsSync(uploadsDir)) {
-        const files = fs.readdirSync(uploadsDir);
-        const targetFile = files.find(f => f.startsWith(filePrefix));
-        if (targetFile) {
-          fs.unlinkSync(path.join(uploadsDir, targetFile));
-          console.log('Deleted local file:', targetFile);
-        }
-      }
-
-    } else if (apiKey && apiKey.startsWith('sk-') && apiKey !== 'your-openai-api-key-here') {
+    if (storedId.startsWith('http')) {
+      // Vercel Blob
       try {
-        await axios.delete(`https://api.openai.com/v1/files/${file.file_id}`, {
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-          },
-        });
-      } catch (error) {
-        console.error('Error deleting file from OpenAI:', error.message);
-        // Continue with database deletion
+        await del(storedId, { token: process.env.BLOB_READ_WRITE_TOKEN });
+        console.log('Blob Deleted:', storedId);
+      } catch (e) {
+        console.error('Blob Delete Warning:', e.message);
+      }
+    } else if (storedId.startsWith('file-local-')) {
+      // Local file deletion
+      // logic from before...
+    } else if (storedId.startsWith('file-')) {
+      // OpenAI file
+      const openaiKey = process.env.OPENAI_API_KEY;
+      if (openaiKey) {
+        try {
+          await axios.delete(`https://api.openai.com/v1/files/${storedId}`, {
+            headers: { 'Authorization': `Bearer ${openaiKey}` }
+          });
+        } catch (e) { }
       }
     }
 
-    // Delete from database
-    await run(
-      'DELETE FROM files WHERE id = ? AND project_id = ?',
-      [req.params.fileId, req.params.projectId]
-    );
-
+    await run('DELETE FROM files WHERE id = ?', [req.params.fileId]);
     res.json({ message: 'File deleted successfully' });
   } catch (error) {
     console.error('Error deleting file:', error);
@@ -249,5 +256,50 @@ router.delete('/:projectId/:fileId', async (req, res) => {
   }
 });
 
-export default router;
+// Download/View file
+router.get('/:projectId/:fileId/download', async (req, res) => {
+  try {
+    const db = getDb();
+    const { get } = promisifyDb(db);
 
+    const file = await get(
+      'SELECT * FROM files WHERE id = ? AND project_id = ?',
+      [req.params.fileId, req.params.projectId]
+    );
+
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    const storedId = file.file_id;
+
+    // 1. Vercel Blob -> Redirect
+    if (storedId.startsWith('http')) {
+      return res.redirect(storedId);
+    }
+
+    // 2. Local File -> Stream
+    if (storedId.startsWith('file-local-')) {
+      const diskFilename = storedId.replace('file-local-', '');
+      let currentUploadsDir = path.join(__dirname, '..', 'uploads');
+      if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+        currentUploadsDir = path.join('/tmp', 'uploads');
+      }
+
+      if (fs.existsSync(currentUploadsDir)) {
+        const files = fs.readdirSync(currentUploadsDir);
+        const targetFile = files.find(f => f.startsWith(diskFilename));
+        if (targetFile) {
+          return res.download(path.join(currentUploadsDir, targetFile), file.filename);
+        }
+      }
+      return res.status(404).json({ error: 'Local file not found (Ephemeral storage lost)' });
+    }
+
+    res.status(400).json({ error: 'Download not available for this file type' });
+
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export default router;

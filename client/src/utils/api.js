@@ -2,7 +2,8 @@ import axios from 'axios';
 import { getAuthToken, removeAuthToken } from './auth';
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api',
+  // Default to the known Vercel backend if Env Var is missing
+  baseURL: import.meta.env.VITE_API_URL || 'https://chatbot-server-coral.vercel.app/api',
 });
 
 // Add token to all requests

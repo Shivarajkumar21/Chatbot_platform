@@ -5,6 +5,7 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import ProjectDetail from './pages/ProjectDetail';
 import { getAuthToken, setAuthToken, removeAuthToken } from './utils/auth';
+import api from './utils/api';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -22,19 +23,20 @@ function App() {
 
   const verifyToken = async (token) => {
     try {
-      const response = await fetch('http://localhost:5000/api/auth/me', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      console.log('Verifying token...'); // Debug
+      const response = await api.get('/auth/me');
+      console.log('Auth check response:', response.status); // Debug
 
-      if (response.ok) {
+      if (response.status === 200) {
         setIsAuthenticated(true);
       } else {
+        console.warn('Auth check failed with status:', response.status); // Debug
         removeAuthToken();
         setIsAuthenticated(false);
       }
     } catch (error) {
+      console.error('Auth check error:', error); // Debug
+      console.error('API Base URL:', api.defaults.baseURL); // Check if hitting localhost
       removeAuthToken();
       setIsAuthenticated(false);
     } finally {

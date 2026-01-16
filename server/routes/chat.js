@@ -54,10 +54,13 @@ router.post(
 
       // Add system prompt if exists
       if (prompts.length > 0) {
+        console.log('Using System Prompts:', prompts.map(p => p.content));
         messages.push({
           role: 'system',
           content: prompts.map(p => p.content).join('\n\n'),
         });
+      } else {
+        console.log('No System Prompts found for this project.');
       }
 
       // Add chat history (reverse to get chronological order)
@@ -226,12 +229,22 @@ async function callOpenAI(messages) {
 }
 
 async function callOpenRouter(messages) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  let apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey || apiKey === 'your-openrouter-api-key-here') {
     throw new Error('OPENROUTER_API_KEY not configured. Please set it in server/.env file');
   }
 
+  // Clean the key (remove possible whitespace/newlines from copy-paste)
+  apiKey = apiKey.trim();
+
+  console.log('Using OpenRouter Key:', apiKey.substring(0, 15) + '...');
+
   const model = process.env.OPENROUTER_MODEL || 'openai/gpt-3.5-turbo';
+
+  // Use dynamic APP_URL if valid, or fallback to localhost
+  const siteUrl = (process.env.APP_URL && process.env.APP_URL.startsWith('http'))
+    ? process.env.APP_URL
+    : 'https://chatbot-platform.vercel.app';
 
   try {
     const response = await axios.post(
@@ -244,7 +257,7 @@ async function callOpenRouter(messages) {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000',
+          'HTTP-Referer': siteUrl,
           'X-Title': 'Chatbot Platform',
         },
       }

@@ -140,6 +140,15 @@
   /* Ensure white text */
 }
 
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover .item-title {
+  text-decoration: underline;
+  color: var(--primary);
+}
+
 /* Delete Icon in Items */
 .btn-delete-icon {
   width: 24px;

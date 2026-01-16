@@ -198,6 +198,29 @@ function ProjectDetail({ onLogout }) {
     }
   };
 
+  const handleDownloadFile = async (fileId, filename) => {
+    const toastId = toast.loading('Downloading...');
+    try {
+      const response = await api.get(`/files/${id}/${fileId}/download`, {
+        responseType: 'blob',
+      });
+
+      // Create blob link to download
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+
+      toast.success('Download started', { id: toastId });
+    } catch (error) {
+      console.error('Download error:', error);
+      toast.error('Failed to download file', { id: toastId });
+    }
+  };
+
   if (loading) {
     return (
       <div className="loading-screen">
@@ -259,7 +282,11 @@ function ProjectDetail({ onLogout }) {
               ) : (
                 files.map((f) => (
                   <div key={f.id} className="sidebar-item">
-                    <div className="item-content">
+                    <div
+                      className="item-content clickable"
+                      onClick={() => handleDownloadFile(f.id, f.filename)}
+                      title="Click to download"
+                    >
                       <div className="item-title">{f.filename}</div>
                       <div className="item-subtitle">Context</div>
                     </div>
